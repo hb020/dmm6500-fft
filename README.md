@@ -1,13 +1,17 @@
-# A spectrum analyser that runs on the DMM6500
+# A spectrum analyser that runs on the Keithley DMM6500, DMM7510, and DAQ6510
 
 A real-time FFT spectrum analyser for the Keithley DMM6500, DAQ6510 and DMM7510, running **entirely
 on the instrument** as a TSP app. The digitizer captures, the instrument computes the transform in
 Lua, and the firmware's own graph object draws the trace. No host, no PC software.
 
-![The spectrum screen: two tones at 21.1 and 42.2 kHz, 4.5 and 4.0 V, over a 0 to 50 kHz span with the Hann window](docs/manual-spectrum.png)
+![The spectrum screen at 16,384 samples: a 12.5 kHz 1.0014 V tone reading 0.0 dBV as a narrow spike, its 
+second and third harmonics resolved as separate lines at 25.000 and 37.500 kHz, 81 and 83 dB down, over a 10 Hz 
+to 50 kHz span with 6.1 Hz bins. The firmware labels the axes itself, +020.0dB down to -120.0dB and 
++00.00kHz across to +40.00kHz](docs/manual-spectrum-16384.png)
 
 A bench multimeter is not a spectrum analyser. This one has a 1 MS/s digitizer, a 400 MHz processor
-and a touchscreen, which is enough for 195 Hz resolution at 10 frames a second.
+and a touchscreen, which is enough to resolve the second and third harmonics of a 12.5 kHz tone at
+−83.5 and −84.1 dBV — 6.1 Hz bins at 16,384 samples, or 195 Hz bins at 10 frames a second.
 
 `docs/MANUAL.md` is the user manual. Start there to operate it; read on for how it works.
 
@@ -16,116 +20,65 @@ and a touchscreen, which is enough for 195 Hz resolution at 10 frames a second.
 - **Digitizes** up to 1 MS/s, with selectable 512 to 16,384 samples per frame (default 512).
 - **Transforms** with a real-input radix-2 FFT in Lua 5.0.2. The window, the bit-reversal permutation
   and every twiddle factor are precomputed when settings are applied. 256 to 8,192 bins.
-- **Plots** through `display.OBJ_GRAPH`, one call a frame rather than one a point, which brings axes,
-  grid, labels and auto-scaling with it.
+- **Plots** through `display.OBJ_GRAPH`, one buffer refill a frame and no graph call in a frame
+  nobody has touched, which brings axes, grid, labels and auto-scaling with it. The firmware labels both axes in real units --
+  kHz across, from binding X to the reading's extra field rather than its timestamp, and dB down,
+  from a two-character custom buffer unit. The trace is a fixed **255 columns** at every
+  sample count, each carrying the **maximum of the bins it covers**, so a narrow tone always reaches
+  it however many bins the span holds.
 - **Finds six peaks** to sub-bin accuracy, correcting both the frequency and the scalloping loss.
 - **Offers four windows**, Kaiser with six betas, and reads peaks exactly for each.
-- **Previews acquisition settings** in Options: sampling rate, bin spacing and record duration
-  update as the stop frequency or FFT sample count changes.
+- **Locks the view.** The firmware's graph pans and zooms on touch and will not be told not to, so a
+  brushed screen slides the trace off its axes. On by default, and free until you touch it: the graph
+  reports its own pan, and a once-a-second check does nothing without a report. One that has a report
+  reads the limits back at 0.0094 ms and rewrites only an axis that really moved — a write costs
+  60 ms, so doing it per frame collapsed the update rate. The padlock toggles it: press once to pan
+  freely, press again to lock and snap the window back at once. The cog beside it opens Options.
 
 The span windows the display and may only *raise* the sample rate, never lower it: zooming in leaves
-acquisition at 100 kS/s and, with the default 512 samples, 195.3 Hz bins. Widening past 50 kHz steps the rate up to 1 MS/s and
-coarsens the bins with it. There is no anti-alias filter, so a rate chosen below the signal's own
-content folds it into view — a pure 21.1 kHz sine, sampled for a 7 kHz span, drew a 4.51 V peak at
-1.100 kHz. Raising the rate can only remove aliases; lowering it is what creates them.
+acquisition at 100 kS/s and, with the default 512 samples, 195.3 Hz bins. Widening past 50 kHz steps 
+the rate up to 1 MS/s and coarsens the bins with it. There is no anti-alias filter, so a rate chosen 
+below the signal's own content folds it into view.
 
 More samples give finer bins without reducing bandwidth: 16,384 samples at 100 kS/s give
-6.10 Hz spacing and a 163.84 ms record. Acquisition duration is `N / fs`, not the full frame time;
-processing and display add overhead. Larger sizes will reslt in sluggish interface updates and reaction times.
+6.10 Hz spacing. Larger sizes cost update rate. `docs/PERFORMANCE.md` has every size measured.
+
+![The same tone at the default 512 samples: one 195 Hz-wide lump, the harmonics lost in the noise 
+floor, at 10 frames a second](docs/manual-spectrum.png)
+
+The same signal at the default 512 samples, for comparison: 195 Hz bins at 10 frames a second, where
+the harmonics are in the floor. 
 
 ## Choosing a window
 
 | | peak sidelobe | scalloping loss | -20 dB peak width | skirt swing |
 |---|---|---|---|---|
-| **Hann** (default) | -31.5 dB | -1.42 dB | 3-4 bins | 32.8 dB |
-| **Blackman** | -58.1 | -1.09 | 3-4 | 15.3 |
-| **Blk-Harris** | -92.0 | -0.82 | 4-5 | 8.2 |
-| **Kaiser** β=4 | -30.0 | -2.06 | 2-3 | 7.6 |
-| β=6 | -43.8 | -1.50 | 3-4 | 7.6 |
-| β=9 | -66.3 | -1.06 | 4-5 | 13.3 |
-| β=12 | -90.0 | -0.82 | 4-5 | 8.1 |
-| β=15 | -114.0 | -0.67 | 5-6 | 6.1 |
-| β=18 | -138.6 | -0.56 | 5-6 | 4.9 |
+| **Hann** (default) | -31.5 dB | -1.42 dB | 3-4 bins | 49.8 dB |
+| **Blackman** | -58.1 | -1.09 | 3-4 | 10.8 |
+| **Blk-Harris** | -92.0 | -0.82 | 4-5 | 7.2 |
+| **Kaiser** β=4 | -30.0 | -2.06 | 2-3 | 3.9 |
+| β=6 | -43.8 | -1.50 | 3-4 | 21.9 |
+| β=9 | -66.3 | -1.06 | 4-5 | 10.1 |
+| β=12 | -90.0 | -0.82 | 4-5 | 7.2 |
+| β=15 | -114.0 | -0.67 | 5-6 | 5.6 |
+| β=18 | -138.6 | -0.56 | 5-6 | 4.7 |
 
-`tools/window_check.lua` measures every figure from the window the instrument builds. **Skirt swing**
-is the one that is not a textbook number: how much the level two bins out changes between a tone on a
-bin centre and one half a bin off. On a centre the DFT samples the window transform at its own nulls
-and the skirts vanish, so the peak draws narrower — Hann swings 33 dB, which is why a tone at exactly
-25 kHz looks sharper than the same tone at 24 kHz. Kaiser at β=15 or 18 cuts that to 5-6 dB and
-doubles the peak width. `docs/MANUAL.md` explains the effect for an operator.
+**Skirt swing** is the one that is not a textbook number: the level at the second bin from the peak, 
+on a bin centre against half a bin off. On a centre that bin sits 2.0 bins from the tone; half a bin off, 
+the nearer of the two sits 1.5 bins away — so the figure is how far the window's transform rises between 
+those two offsets, and it is what makes a tone at exactly 25 kHz look sharper than the same tone at
+24 kHz. Hann swings 50 dB, because its transform nulls at 2 bins exactly. Kaiser at β=15 or 18 cuts
+that to 5 dB and doubles the peak width; β=6 is the other extreme at 22 dB, its main lobe ending at
+2.16 bins. `docs/MANUAL.md` explains the effect for an operator.
 
-**The peak estimate is exact for every window.** `fft_init` samples the window's own transform into a
-61-point table, inverts the offset-to-ratio curve from it, and reads the scalloping correction from
-the same table, so the estimator is derived from the window in use rather than fitted to one and
-approximated for the rest. Worst case over 83 sub-bin offsets and all nine settings: **4.0e-6 bins of
-frequency error and 0.0035 dB of amplitude error**, both at Kaiser β=4. `tools/test_tsp.lua` pins
-them at 1e-5 bins and 0.008 dB, and proves the sweep failable by feeding one window's data to
-another's tables.
-
-Rectangular and Hamming are absent. Rectangular's transform nulls one bin from the peak, which leaves
-the three-bin estimate ill-conditioned; Kaiser β=6 covers Hamming to within a dB.
-
-Mixed signals are where the choice earns its keep. A weak tone 40 dB down and 5 bins from a strong
-one reads -38.5 dBV under Hann, whose own sidelobes add in, and -39.8 under Blackman-Harris. Kaiser
-β=4 misses it entirely: -30 dB sidelobes bury a -40 dB tone.
-
-## Layout
-
-```
-FFT_Spectrum.tspa        the packaged app, installable from a USB key
-tsp/fft_core.tsp         the transform: windows, bit reversal, twiddles, butterflies, peak estimate
-tsp/spectrum_app.tsp     the options form and the run loop
-tsp/spectrum_graph.tsp   the graph, its scaling, and the frequency axis
-tsp/spectrum_ui.tsp      the loading cover and peak finding
-tools/window_check.lua   what the peak estimator achieves, per window, against known tones
-tools/                   packaging, linting, screen capture, test harness
-docs/MANUAL.md           the user manual
-docs/PERFORMANCE.md      where the frame time goes, and what is left to win
-docs/pixel-drawing.pdf   why the graph object beat line objects and setpixel
-```
-
-## Building and installing
-
-```sh
-python3 tools/package_tspa.py                           # -> FFT_Spectrum.tspa, gated
-~/tmp/base/out/lua502/bin/lua tools/test_tsp.lua        # the offline suite
-~/tmp/base/out/lua502/bin/lua tools/window_check.lua    # per-window accuracy
-python3 tools/lint_tsp.py tsp/*.tsp                     # Lua 5.0.2 syntax gate
-```
-
-Copy `FFT_Spectrum.tspa` to a USB key and install it from **MENU > Manage Apps**.
-
-**Run the suite under Lua 5.0.2, never the `lua` on `$PATH`.** The instrument is 5.0.2; later
-versions accept hex literals, `#`, string methods and `string.match`, none of which it takes. A parse
-error anywhere in the archive leaves `fftsa` nil, so every call raises `-286` on the panel.
-`package_tspa.py` gates itself against that: it runs the linter, then compiles the *assembled* script
-with 5.0.2's own compiler, before writing anything. A missing 5.0.2 compiler is a refusal, not a skip.
-
-## Notes on the instrument
-
-Two measured facts shape the whole design.
-
-**The display runs in another task on the same core, and only while Lua is blocked.** A separate GUI
-task draws, not the second PowerPC: the start-up code creates it locally and the channel the display
-API talks over is in-process. Sharing the one core with the interpreter, it is scheduled only when
-the Lua task blocks — so a Lua frame rate means nothing by itself. A frame loop with a 5 ms yield
-measures 35.6 Hz in Lua while dropping display messages and updating the glass three times a second.
-Every frame therefore blocks once, deliberately, for the paint.
-
-That also fixes the frame rate. A timer tick arriving mid-frame is dropped rather than queued, and
-the shortest period the firmware accepts is 0.05 s, so the displayed rate is quantised to
-`1/(0.05 × ceil(frame/0.05))` — 20, 10, 6.67 fps and nothing between. Getting a frame under 50 ms
-doubles the rate; shaving it from 81 ms to 55 ms buys nothing.
-
-**The interpreter is the bottleneck, not the arithmetic.** A Lua table read costs about 1.4 µs and an
-arithmetic operation about 1.2 µs — some 480 cycles at 400 MHz for one multiply whose floating-point
-part is 3 to 5 cycles. Everything in `fft_core.tsp` that looks like premature optimisation is there
-because the inner loop is table-access bound. `docs/PERFORMANCE.md` has the cost model.
+**The peak estimate is exact for every window, in the middle of the spectrum.** `fft_init` samples
+the window's own transform into a 61-point table, inverts the offset-to-ratio curve from it, and reads
+the scalloping correction from the same table, so the estimator is derived from the window in use
+rather than fitted to one and approximated for the rest. Worst case over 83 sub-bin offsets and all
+nine settings: **4.0e-6 bins of frequency error and 0.0035 dB of amplitude error**, both at Kaiser
+β=4. 
 
 ## Licence
 
 MIT. See `LICENSE`.
 
-Keithley's manuals and the processor reference manuals this work was done against are **not** in the
-repository — they are vendor copyright. Everything measured from them is quoted with its source
-named.
